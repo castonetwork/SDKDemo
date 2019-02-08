@@ -1,0 +1,7 @@
+.connecting:after {
+  content: "connecting"
+}
+
+.connected:after {
+  content: "connected"
+}

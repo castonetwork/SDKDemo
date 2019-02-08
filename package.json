@@ -1,0 +1,20 @@
+{
+  "name": "customcasto",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "parcel -p 1122 ./public/index.html",
+    "update": "yarn add ./packages/castosdk"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "parcel": "^1.11.0"
+  },
+  "dependencies": {
+    "@babel/polyfill": "^7.2.5",
+    "@casto/sdk": "./packages/castosdk"
+  }
+}
