@@ -19,6 +19,7 @@
     "peer-info": "^0.15.1",
     "pull-notify": "^0.1.1",
     "pull-pushable": "^2.2.0",
-    "pull-stream": "^3.6.9"
+    "pull-stream": "^3.6.9",
+    "lodash.isfunction": "^3.0.9"
   }
 }
