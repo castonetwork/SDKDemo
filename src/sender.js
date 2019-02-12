@@ -2,21 +2,21 @@ import "@babel/polyfill";
 import Casto from "@casto/sdk";
 
 const initApp = async () => {
-  const casto = new Casto({
+  window.casto = new Casto({
     type: "sender"
   });
-  // casto.start();
-  // await casto.onConnected();
-  const connectionStatusElement = document.querySelector("#connectionStatus>span");
-  connectionStatusElement.classList.remove("connecting");
-  connectionStatusElement.classList.add("connected");
+
+  Object.assign(casto, {
+    onNodeIntiated: e => console.log("[event] node init"),
+    onReadyToCast: peerId=> console.log("[event] ready to cast", peerId)
+  });
 
   await new Promise((resolve)=>
     document.forms['broadcastForm'].addEventListener("submit", e=> {
       e.preventDefault();
       resolve();
     }));
-  // const mediaStream = await casto.broadcast();
+
   document.getElementById("media").srcObject = await casto.start();
 
   const startButtonElement = document.getElementById("start");
@@ -24,5 +24,3 @@ const initApp = async () => {
 };
 
 document.addEventListener("DOMContentLoaded", initApp);
-
-

@@ -30,14 +30,6 @@ const createNode = async websocketStars => new Promise((resolve, reject) => {
   });
 });
 
-const setHandler = async (event, callback) => {
-  if (callback) {
-    this.event.addListener(event, callback);
-  } else {
-    return new Promise(resolve => this.event.addListener(event, resolve))
-  }
-};
-
 class Casto {
   constructor(options) {
     const defaults = {
@@ -49,49 +41,72 @@ class Casto {
         video: true,
         audio: true
       },
-      serviceId: 'CASTO'
+      serviceId: 'TESTO'
     };
+    this.handshakePushable = Pushable();
     this.onHandle = this.onHandle.bind(this);
-    this.setup({...defaults, ...options});
+    this.startBroadCast = this.startBroadCast.bind(this);
+    /* events */
+    this.onNodeInitiated = undefined;
+    this.onReadyToCast = undefined;
+    this.init({...defaults, ...options});
+    
   }
-
+  async init(options) {
+    await this.setup(options);
+    console.log("start to discover relays");
+    this.nodeSetup();
+  }
   async setup(config) {
     this.config = config;
     this.event = new EventEmitter();
+    this.sendStream = Pushable()
+    this.event.addListener("onNodeInitiated", e => {
+      this.onNodeInitiated && this.onNodeInitiated(e);
+    });
+    this.event.addListener("onReadyToCast", e => {
+      this.onReadyToCast && this.onReadyToCast(e);
+    });
     if (!config.peerId) {
       this._node = await createNode(config.websocketStars);
     }
-    console.log("node initialized");
     this.event.emit("onNodeInitiated");
+    return Promise.resolve();
   }
 
   async onHandle(protocol, conn) {
-    let sendStream = Pushable();
-    const pc = new RTCPeerConnection(this.config.peerConnection);
-    Object.assign(pc, {
+    let handledPeerId;
+    this.pc = new RTCPeerConnection(this.config.peerConnection);
+    Object.assign(this.pc, {
       "onicecandidate": event => {
         if (event.candidate) {
-          sendStream.push({
+          this.sendStream.push({
             topic: 'sendTrickleCandidate',
             candidate: event.candidate,
           })
         }
       },
-      "onnegotiationneeded": async event => {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        console.log('localDescription', pc.localDescription)
-        sendStream.push({
-          topic: 'sendCreateOffer',
-          sdp: pc.localDescription,
-        })
+      "oniceconnectionstatechange": async event => {
+        console.log('[ICE STATUS] ', this.pc.iceConnectionState)
+        const connectionStates = {
+          "connected": ()=>
+            this.sendStream.push({
+              topic: "updateStreamerInfo",
+              profile: {},
+              title: "anonymous"
+            }),
+          "disconnected": ()=> {
+            this.pc.getTransceivers().forEach(transceiver => transceiver.direction = 'inactive');
+            this.pc.close();
+          }
+        }
+        connectionStates[this.pc.iceConnectionState] &&
+          connectionStates[this.pc.iceConnectionState]();
       }
     });
-    pc.createDataChannel("chat");
-    await new Promise(r => pc.onsignalingstatechange = () => pc.signalingState == "stable" && r());
-    // transceiver = pc1.addTransceiver(trackA, {streams})
+    // this.pc.createDataChannel("msg");
 
-    pull(sendStream,
+    pull(this.sendStream,
       pull.map(o => JSON.stringify(o)),
       conn,
       pull.map(o => window.JSON.parse(o.toString())),
@@ -99,33 +114,36 @@ class Casto {
         const controllerResponse = {
           "sendCreatedAnswer": async ({sdp}) => {
             console.log('controller answered', sdp);
-            await pc.setRemoteDescription(sdp);
+            await this.pc.setRemoteDescription(sdp);
           },
           "sendTrickleCandidate": ({ice}) => {
             console.log("received iceCandidate", ice);
-            pc.addIceCandidate(ice);
+            this.pc.addIceCandidate(ice);
           },
           "requestStreamerInfo": ({peerId}) => {
             if (this.connectedPrismPeerId) {
-              sendStream.push({
+              this.sendStream.push({
                 topic: "deniedStreamInfo",
               });
               //TODO: pull.end
-              sendStream.end();
+              this.sendStream.end();
             } else {// isNull
               this.connectedPrismPeerId = peerId;
-              sendStream.push({
+              this.sendStream.push({
                 topic: "setupStreamInfo",
+                // coords
               });
             }
           },
           'deniedSetupStreamInfo': () => {
             this.connectedPrismPeerId = null;
             //TODO: pull.end
-            sendStream.end();
+            this.sendStream.end();
           },
           'readyToCast': () => {
-            this.event.emit("onConnected");
+            this.handledPeerId = this.connectedPrismPeerId;
+            this.event.emit("onReadyToCast", this.connectedPrismPeerId);
+            this.handshakePushable.push(true);
             console.log("this.connectedPrismPeerId : ", this.connectedPrismPeerId);
           }
         };
@@ -133,17 +151,16 @@ class Casto {
       })
     );
   }
-
   async nodeSetup() {
     console.log(`start: ${this.config.serviceId}`, this._node);
     this._node.handle(`/streamer/${this.config.serviceId}/unified-plan`, this.onHandle);
     this._node.on('peer:connect', peerInfo => {
-      console.log('peer connected:', peerInfo.id.toB58String())
+      // console.log('peer connected:', peerInfo.id.toB58String())
     });
     this._node.on('peer:disconnect', peerInfo => {
-      console.log('peer disconnected:', peerInfo.id.toB58String())
-      // if (peerInfo.id.toB58String()===this.connectedPrismPeerId) {
-      // }
+      if (peerInfo.id.toB58String()===this.connectedPrismPeerId) {
+        console.log('peer disconnected:', peerInfo.id.toB58String());
+      }
     });
     this._node.start(err => {
       if (err) {
@@ -153,22 +170,32 @@ class Casto {
       }
     })
   }
+  async startBroadCast(mediaStream) {
+    console.log('ready to sir, my lord');
+    console.log(mediaStream);
+    mediaStream.getTracks().forEach(track=>
+      this.pc.addTransceiver(track.kind).sender.replaceTrack(track)
+    );
+    try {
+      let offer = await this.pc.createOffer();
+      await this.pc.setLocalDescription(offer);
+      this.sendStream.push({
+        topic: "sendCreatedOffer",
+        sdp: this.pc.localDescription
+      });
+    } catch(err) {
+      console.error(err);
+    }
+  }
   async start() {
     console.log("wait ready");
-    await new Promise(resolve => this.event.addListener("onReady", resolve));
-  }
-
-  static async onNodeInitiated(callback) {
-    return setHandler("onNodeInitiated", callback);
-  }
-
-  static async onConnected(callback) {
-    return setHandler("onConnected", callback);
-  }
-
-  async broadcast(callback) {
-    const mediaSource = await navigator.mediaDevices.getUserMedia({video: true, audio: true});
-    return setHandler("onBroadcasted", () => callback(mediaSource));
+    const mediaStream = await navigator.mediaDevices.getUserMedia({video: true, audio: true});
+    pull(
+      this.handshakePushable,
+      pull.take(1),
+      pull.drain(o=>this.startBroadCast(mediaStream))
+    );
+    return mediaStream;
   }
 }
 
