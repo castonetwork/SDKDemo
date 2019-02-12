@@ -49,8 +49,9 @@ class Casto {
     /* events */
     this.onNodeInitiated = undefined;
     this.onReadyToCast = undefined;
+    this.onClosed = undefined;
+
     this.init({...defaults, ...options});
-    
   }
   async init(options) {
     await this.setup(options);
@@ -66,6 +67,9 @@ class Casto {
     });
     this.event.addListener("onReadyToCast", e => {
       this.onReadyToCast && this.onReadyToCast(e);
+    });
+    this.event.addListener("onClosed", e => {
+      this.onClosed && this.onClosed(e);
     });
     if (!config.peerId) {
       this._node = await createNode(config.websocketStars);
@@ -89,15 +93,23 @@ class Casto {
       "oniceconnectionstatechange": async event => {
         console.log('[ICE STATUS] ', this.pc.iceConnectionState)
         const connectionStates = {
+          /* when sender connects to the relay */
           "connected": ()=>
             this.sendStream.push({
               topic: "updateStreamerInfo",
               profile: {},
               title: "anonymous"
             }),
+          /* when viewer start to watch this broadcast */
+          "completed": ()=> {
+            this.event.emit("onCompleted");
+          },
           "disconnected": ()=> {
             this.pc.getTransceivers().forEach(transceiver => transceiver.direction = 'inactive');
             this.pc.close();
+          },
+          "closed": ()=> {
+            this.event.emit("onClosed");
           }
         }
         connectionStates[this.pc.iceConnectionState] &&
