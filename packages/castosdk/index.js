@@ -1,34 +1,103 @@
-import libp2p from "libp2p";
 import EventEmitter from "./eventEmitter";
-import PeerInfo from "peer-info";
 import multiaddr from "multiaddr";
-import WSStar from "libp2p-websocket-star";
-import Mplex from "libp2p-mplex";
 import pull from "pull-stream";
 import Pushable from "pull-pushable";
+import createNode from "./createNode";
 
-class Node extends libp2p {
-  constructor(_options) {
-    const wsStar = new WSStar({id: _options.peerInfo.id});
+class Caste {
+  constructor(options) {
     const defaults = {
-      modules: {
-        transport: [wsStar],
-        streamMuxer: [Mplex],
-        peerDiscovery: [wsStar.discovery]
-      }
+      peerConnection: {
+        sdpSemantics: 'unified-plan'
+      },
+      websocketStars: [multiaddr("/dns4/wsstar.casto.network/tcp/443/wss/p2p-websocket-star/")],
+      constraint: {
+        video: true,
+        audio: true
+      },
+      serviceId: 'TESTO'
     };
-    super({...defaults, ..._options});
-  }
-}
+    this.handshakePushable = Pushable();
+    this.onHandle = this.onHandle.bind(this);
+    this.startBroadCast = this.startBroadCast.bind(this);
+    /* events */
+    this.onNodeInitiated = undefined;
+    this.onReadyToCast = undefined;
+    this.onClosed = undefined;
 
-const createNode = async websocketStars => new Promise((resolve, reject) => {
-  PeerInfo.create((err, peerInfo) => {
-    if (err) reject(err);
-    websocketStars.forEach(addr => peerInfo.multiaddrs.add(addr));
-    const node = new Node({peerInfo});
-    resolve(node);
-  });
-});
+    this.init({ ...defaults, ...options });
+  }
+  async init(options) {
+    await this.setup(options);
+    console.log("start to discover relays");
+    this.nodeSetup();
+  }
+  async setup(config) {
+    this.config = config;
+    this.event = new EventEmitter();
+    this.sendStream = Pushable()
+    this.event.addListener("onNodeInitiated", e => {
+      this.onNodeInitiated && this.onNodeInitiated(e);
+    });
+    this.event.addListener("onReadyToCast", e => {
+      this.onReadyToCast && this.onReadyToCast(e);
+    });
+    this.event.addListener("onClosed", e => {
+      this.onClosed && this.onClosed(e);
+    });
+    if (!config.peerId) {
+      this._node = await createNode(config.websocketStars);
+    }
+    this.event.emit("onNodeInitiated");
+    return Promise.resolve();
+  }
+  async nodeSetup() {
+    console.log(`start: ${this.config.serviceId}`, this._node);
+    this._node.handle(`/streamer/${this.config.serviceId}/unified-plan`, this.onHandle);
+    this._node.on('peer:connect', peerInfo => {
+      // console.log('peer connected:', peerInfo.id.toB58String())
+    });
+    this._node.on('peer:disconnect', peerInfo => {
+      if (peerInfo.id.toB58String() === this.connectedPrismPeerId) {
+        console.log('peer disconnected:', peerInfo.id.toB58String());
+      }
+    });
+    this._node.start(err => {
+      if (err) {
+        console.log(err);
+      } else {
+        console.log("node started", this._node.peerInfo.multiaddrs.toArray().map(o => o.toString()).join("/"));
+      }
+    })
+  }
+  async startBroadCast(mediaStream) {
+    console.log('ready to sir, my lord');
+    console.log(mediaStream);
+    mediaStream.getTracks().forEach(track =>
+      this.pc.addTransceiver(track.kind).sender.replaceTrack(track)
+    );
+    try {
+      let offer = await this.pc.createOffer();
+      await this.pc.setLocalDescription(offer);
+      this.sendStream.push({
+        topic: "sendCreatedOffer",
+        sdp: this.pc.localDescription
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  }
+  async start() {
+    console.log("wait ready");
+    const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    pull(
+      this.handshakePushable,
+      pull.take(1),
+      pull.drain(o => this.startBroadCast(mediaStream))
+    );
+    return mediaStream;
+  }  
+}
 
 class Casto {
   constructor(options) {
@@ -51,7 +120,7 @@ class Casto {
     this.onReadyToCast = undefined;
     this.onClosed = undefined;
 
-    this.init({...defaults, ...options});
+    this.init({ ...defaults, ...options });
   }
   async init(options) {
     await this.setup(options);
@@ -94,21 +163,21 @@ class Casto {
         console.log('[ICE STATUS] ', this.pc.iceConnectionState)
         const connectionStates = {
           /* when sender connects to the relay */
-          "connected": ()=>
+          "connected": () =>
             this.sendStream.push({
               topic: "updateStreamerInfo",
               profile: {},
               title: "anonymous"
             }),
           /* when viewer start to watch this broadcast */
-          "completed": ()=> {
+          "completed": () => {
             this.event.emit("onCompleted");
           },
-          "disconnected": ()=> {
+          "disconnected": () => {
             this.pc.getTransceivers().forEach(transceiver => transceiver.direction = 'inactive');
             this.pc.close();
           },
-          "closed": ()=> {
+          "closed": () => {
             this.event.emit("onClosed");
           }
         }
@@ -124,15 +193,15 @@ class Casto {
       pull.map(o => window.JSON.parse(o.toString())),
       pull.drain(o => {
         const controllerResponse = {
-          "sendCreatedAnswer": async ({sdp}) => {
+          "sendCreatedAnswer": async ({ sdp }) => {
             console.log('controller answered', sdp);
             await this.pc.setRemoteDescription(sdp);
           },
-          "sendTrickleCandidate": ({ice}) => {
+          "sendTrickleCandidate": ({ ice }) => {
             console.log("received iceCandidate", ice);
             this.pc.addIceCandidate(ice);
           },
-          "requestStreamerInfo": ({peerId}) => {
+          "requestStreamerInfo": ({ peerId }) => {
             if (this.connectedPrismPeerId) {
               this.sendStream.push({
                 topic: "deniedStreamInfo",
@@ -170,7 +239,7 @@ class Casto {
       // console.log('peer connected:', peerInfo.id.toB58String())
     });
     this._node.on('peer:disconnect', peerInfo => {
-      if (peerInfo.id.toB58String()===this.connectedPrismPeerId) {
+      if (peerInfo.id.toB58String() === this.connectedPrismPeerId) {
         console.log('peer disconnected:', peerInfo.id.toB58String());
       }
     });
@@ -185,7 +254,7 @@ class Casto {
   async startBroadCast(mediaStream) {
     console.log('ready to sir, my lord');
     console.log(mediaStream);
-    mediaStream.getTracks().forEach(track=>
+    mediaStream.getTracks().forEach(track =>
       this.pc.addTransceiver(track.kind).sender.replaceTrack(track)
     );
     try {
@@ -195,20 +264,23 @@ class Casto {
         topic: "sendCreatedOffer",
         sdp: this.pc.localDescription
       });
-    } catch(err) {
+    } catch (err) {
       console.error(err);
     }
   }
   async start() {
     console.log("wait ready");
-    const mediaStream = await navigator.mediaDevices.getUserMedia({video: true, audio: true});
+    const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
     pull(
       this.handshakePushable,
       pull.take(1),
-      pull.drain(o=>this.startBroadCast(mediaStream))
+      pull.drain(o => this.startBroadCast(mediaStream))
     );
     return mediaStream;
   }
 }
 
-module.exports = Casto;
+module.exports = {
+  Casto,
+  Caste
+};

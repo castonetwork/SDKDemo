@@ -1,5 +1,5 @@
 import "@babel/polyfill";
-import Casto from "@casto/sdk";
+import { Casto } from "@casto/sdk";
 
 const initApp = async () => {
   window.casto = new Casto({
