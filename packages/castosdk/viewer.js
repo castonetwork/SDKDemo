@@ -1,0 +1,102 @@
+import EventEmitter from "./eventEmitter";
+import multiaddr from "multiaddr";
+import pull from "pull-stream";
+import Pushable from "pull-pushable";
+import createNode from "./createNode";
+
+class Viewer {
+  constructor(options) {
+    const defaults = {
+      peerConnection: {
+        sdpSemantics: 'unified-plan'
+      },
+      websocketStars: [multiaddr("/dns4/wsstar.casto.network/tcp/443/wss/p2p-websocket-star/")],
+      constraint: {
+        video: true,
+        audio: true
+      },
+      serviceId: 'TESTO'
+    };
+    this.handshakePushable = Pushable();
+    this.onHandle = this.onHandle.bind(this);
+    this.startBroadCast = this.startBroadCast.bind(this);
+    /* events */
+    this.onNodeInitiated = undefined;
+    this.onReadyToCast = undefined;
+    this.onClosed = undefined;
+
+    this.init({ ...defaults, ...options });
+  }
+  async init(options) {
+    await this.setup(options);
+    console.log("start to discover relays");
+    this.nodeSetup();
+  }
+  async setup(config) {
+    this.config = config;
+    this.event = new EventEmitter();
+    this.sendStream = Pushable()
+    this.event.addListener("onNodeInitiated", e => {
+      this.onNodeInitiated && this.onNodeInitiated(e);
+    });
+    this.event.addListener("onReadyToCast", e => {
+      this.onReadyToCast && this.onReadyToCast(e);
+    });
+    this.event.addListener("onClosed", e => {
+      this.onClosed && this.onClosed(e);
+    });
+    if (!config.peerId) {
+      this._node = await createNode(config.websocketStars);
+    }
+    this.event.emit("onNodeInitiated");
+    return Promise.resolve();
+  }
+  async nodeSetup() {
+    console.log(`start: ${this.config.serviceId}`, this._node);
+    this._node.handle(`/streamer/${this.config.serviceId}/unified-plan`, this.onHandle);
+    this._node.on('peer:connect', peerInfo => {
+      // console.log('peer connected:', peerInfo.id.toB58String())
+    });
+    this._node.on('peer:disconnect', peerInfo => {
+      if (peerInfo.id.toB58String() === this.connectedPrismPeerId) {
+        console.log('peer disconnected:', peerInfo.id.toB58String());
+      }
+    });
+    this._node.start(err => {
+      if (err) {
+        console.log(err);
+      } else {
+        console.log("node started", this._node.peerInfo.multiaddrs.toArray().map(o => o.toString()).join("/"));
+      }
+    })
+  }
+  async startBroadCast(mediaStream) {
+    console.log('ready to sir, my lord');
+    console.log(mediaStream);
+    mediaStream.getTracks().forEach(track =>
+      this.pc.addTransceiver(track.kind).sender.replaceTrack(track)
+    );
+    try {
+      let offer = await this.pc.createOffer();
+      await this.pc.setLocalDescription(offer);
+      this.sendStream.push({
+        topic: "sendCreatedOffer",
+        sdp: this.pc.localDescription
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  }
+  async start() {
+    console.log("wait ready");
+    const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    pull(
+      this.handshakePushable,
+      pull.take(1),
+      pull.drain(o => this.startBroadCast(mediaStream))
+    );
+    return mediaStream;
+  }  
+}
+
+module.exports = Viewer;
