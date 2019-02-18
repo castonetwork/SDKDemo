@@ -35,16 +35,14 @@ class Streamer {
   async setup(config) {
     this.config = config;
     this.event = new EventEmitter();
-    this.sendStream = Pushable()
-    this.event.addListener("onNodeInitiated", e => {
-      this.onNodeInitiated && this.onNodeInitiated(e);
-    });
-    this.event.addListener("onReadyToCast", e => {
-      this.onReadyToCast && this.onReadyToCast(e);
-    });
-    this.event.addListener("onClosed", e => {
-      this.onClosed && this.onClosed(e);
-    });
+    this.sendStream = Pushable();
+    for (const event of [
+      "onNodeInitiated",
+      "onReadyToCast",
+      "onClosed"
+    ]) {
+      this.event.addListener(event, e => this[event] && this[event](e));
+    }
     if (!config.peerId) {
       this._node = await createNode(config.websocketStars);
     }
@@ -140,7 +138,6 @@ class Streamer {
     console.log(`start: ${this.config.serviceId}`, this._node);
     this._node.handle(`/streamer/${this.config.serviceId}/unified-plan`, this.onHandle);
     this._node.on('peer:connect', peerInfo => {
-      // console.log('peer connected:', peerInfo.id.toB58String())
     });
     this._node.on('peer:disconnect', peerInfo => {
       if (peerInfo.id.toB58String() === this.connectedPrismPeerId) {
@@ -156,7 +153,6 @@ class Streamer {
     })
   }
   async startBroadCast(mediaStream) {
-    console.log('ready to sir, my lord');
     console.log(mediaStream);
     mediaStream.getTracks().forEach(track =>
       this.pc.addTransceiver(track.kind).sender.replaceTrack(track)
