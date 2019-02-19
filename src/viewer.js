@@ -6,20 +6,19 @@ const initApp = async () => {
     type: "viewer"
   });
 
+  let channels = {};
+
   Object.assign(casto, {
-    onNodeIntiated: e => console.log("[event] node init"),
+    onNodeInitated: e => console.log("[event] node init"),
     onReadyToCast: peerId=> console.log("[event] ready to cast", peerId),
-    onClosed: ()=> document.getElementById("media").srcObject = null
+    onClosed: ()=> document.getElementById("media").srcObject = null,
+    onSendChannelsList: e => console.log("channels list", e),
+    onSendChannelAdded: ({peerId, info}) => console.log("added channel", peerId, info),
+    onSendChannelRemoved: e => console.log("disconnected prism", e)
   });
 
-  const startButtonElement = document.getElementById("start");
-  for (;;) {
-    await new Promise((resolve)=> {
-      
-    });
-    document.getElementById("media").srcObject = await casto.start();
-    startButtonElement.textContent = "stop";
-  }
+  new Promise(r=>casto.onSendChannelsList)
+  // document.getElementById("media").srcObject = await casto.start();
 };
 
 document.addEventListener("DOMContentLoaded", initApp);
