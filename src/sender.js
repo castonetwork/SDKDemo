@@ -7,7 +7,7 @@ const initApp = async () => {
   });
 
   Object.assign(casto, {
-    onNodeIntiated: e => console.log("[event] node init"),
+    onNodeInitiated: e => console.log("[event] node init"),
     onReadyToCast: peerId=> console.log("[event] ready to cast", peerId),
     onClosed: ()=> document.getElementById("media").srcObject = null
   });
