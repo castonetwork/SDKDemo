@@ -3,6 +3,7 @@ import multiaddr from "multiaddr";
 import pull from "pull-stream";
 import Pushable from "pull-pushable";
 import createNode from "./createNode";
+import stringify from "pull-stringify";
 
 class Viewer {
   constructor(options) {
@@ -17,14 +18,15 @@ class Viewer {
       },
       serviceId: 'TESTO'
     };
+    this.prisms = {};
     this.handshakePushable = Pushable();
-    this.onHandle = this.onHandle.bind(this);
     this.startBroadCast = this.startBroadCast.bind(this);
     /* events */
     this.onNodeInitiated = undefined;
     this.onReadyToCast = undefined;
     this.onClosed = undefined;
 
+    this.onSendChannelsList = undefined;
     this.init({ ...defaults, ...options });
   }
   async init(options) {
@@ -36,15 +38,16 @@ class Viewer {
     this.config = config;
     this.event = new EventEmitter();
     this.sendStream = Pushable()
-    this.event.addListener("onNodeInitiated", e => {
-      this.onNodeInitiated && this.onNodeInitiated(e);
-    });
-    this.event.addListener("onReadyToCast", e => {
-      this.onReadyToCast && this.onReadyToCast(e);
-    });
-    this.event.addListener("onClosed", e => {
-      this.onClosed && this.onClosed(e);
-    });
+    for (const event of [
+      "onNodeInitiated",
+      "onReadyToCast",
+      "onClosed",
+      "onSendChannelsList",
+      "onSendChannelRemoved",
+      "onSendChannelAdded"
+    ]) {
+      this.event.addListener(event, e => this[event] && this[event](e));
+    }
     if (!config.peerId) {
       this._node = await createNode(config.websocketStars);
     }
@@ -53,13 +56,55 @@ class Viewer {
   }
   async nodeSetup() {
     console.log(`start: ${this.config.serviceId}`, this._node);
-    this._node.handle(`/streamer/${this.config.serviceId}/unified-plan`, this.onHandle);
+    this._node.on('peer:discovery', peerInfo => {
+      const prismPeerId = peerInfo.id.toB58String();
+      !this.prisms[prismPeerId] && 
+        this._node.dialProtocol(peerInfo, `/controller/${this.config.serviceId}`, (err,conn)=> {
+          if (err) {
+            return;
+          }
+          const sendToPrism = Pushable();
+          const mediaStream = new MediaStream();
+          this.prisms[prismPeerId] = {
+            isDialed: true,
+            pushable: sendToPrism,
+            mediaStream
+          };
+          pull(
+            sendToPrism,
+            stringify(),
+            conn,
+            pull.map(o => window.JSON.parse(o.toString())),
+            pull.drain(event => {
+              const events = {
+                "sendChannelsList": ({channels})=> {
+                  this.prisms[prismPeerId] = channels;
+                  this.event.emit("onSendChannelsList", channels);
+                },
+                "updateChannelInfo": ({type, peerId, info}) => {
+                  this.event.emit(type === "added" && "onSendChannelAdded", {peerId, info});
+                }
+              };
+              console.log("[event]", event );
+              events[event.topic] && events[event.topic](event);
+            })
+          )
+          sendToPrism.push({
+            topic: "registerWaveInfo",
+            peerId: prismPeerId
+          })
+        })
+    });
     this._node.on('peer:connect', peerInfo => {
       // console.log('peer connected:', peerInfo.id.toB58String())
     });
     this._node.on('peer:disconnect', peerInfo => {
-      if (peerInfo.id.toB58String() === this.connectedPrismPeerId) {
-        console.log('peer disconnected:', peerInfo.id.toB58String());
+      const peerId = peerInfo.id.toB58String();
+      if (this.prisms[peerId]) {
+        for (const flowId in this.prisms[peerId]) {
+          this.event.emit("onSendChannelRemoved", flowId);
+        }
+        delete this.prisms[peerId];
       }
     });
     this._node.start(err => {
@@ -99,4 +144,4 @@ class Viewer {
   }  
 }
 
-module.exports = Viewer;
+module.exports = Viewer
