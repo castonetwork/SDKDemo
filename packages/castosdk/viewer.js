@@ -9,7 +9,8 @@ class Viewer {
   constructor(options) {
     const defaults = {
       peerConnection: {
-        sdpSemantics: 'unified-plan'
+        sdpSemantics: 'unified-plan',
+        iceServers: [{urls: "stun:stun.l.google.com:19302"}]
       },
       websocketStars: [multiaddr("/dns4/wsstar.casto.network/tcp/443/wss/p2p-websocket-star/")],
       constraint: {
@@ -19,15 +20,16 @@ class Viewer {
       serviceId: 'TESTO'
     };
     this.prisms = {};
-    this.handshakePushable = Pushable();
-    this.startBroadCast = this.startBroadCast.bind(this);
     /* events */
     this.onNodeInitiated = undefined;
     this.onReadyToCast = undefined;
     this.onClosed = undefined;
 
+    /* pushable */
+    this.sendToPrism = undefined;
+
     this.onSendChannelsList = undefined;
-    this.init({ ...defaults, ...options });
+    this.init({ ...defaults, ...options }); 
   }
   async init(options) {
     await this.setup(options);
@@ -64,6 +66,7 @@ class Viewer {
             return;
           }
           const sendToPrism = Pushable();
+          this.sendToPrism = sendToPrism;
           const mediaStream = new MediaStream();
           this.prisms[prismPeerId] = {
             isDialed: true,
@@ -83,6 +86,31 @@ class Viewer {
                 },
                 "updateChannelInfo": ({type, peerId, info}) => {
                   this.event.emit(type === "added" && "onSendChannelAdded", {peerId, info});
+                },
+                "sendCreateOffer": async ({sdp, peerId} )=> {
+                  this.prisms[prismPeerId].pc = new RTCPeerConnection(this.config.peerConnection);
+                  Object.assign(this.prisms[prismPeerId].pc, {
+                    onicecandidate: event => {
+                      if (event.candidate) {
+                        sendToPrism.push({
+                          topic: "sendTrickleCandidate",
+                          candidate: event.candidate      
+                        });
+                      }
+                    },
+                    oniceconnectionstatechange: e => {
+                      if (this.prisms[prismPeerId].pc.iceConnectionState === "disconnected") {
+                        this.prisms[prismPeerId].pc.close();
+                      }
+                    },
+                    ontrack: async event => {
+                      this.event.emit("onTrack", event.track);
+                    }
+                  });
+                  this.prisms[prismPeerId].pc.setRemoteDescription(sdp)
+                },
+                "sendTrickleCandidate": ({ice})=> {
+                  this.prisms[prismPeerId].pc.addIceCandidate(ice);
                 }
               };
               console.log("[event]", event );
@@ -115,32 +143,12 @@ class Viewer {
       }
     })
   }
-  async startBroadCast(mediaStream) {
-    console.log('ready to sir, my lord');
-    console.log(mediaStream);
-    mediaStream.getTracks().forEach(track =>
-      this.pc.addTransceiver(track.kind).sender.replaceTrack(track)
-    );
-    try {
-      let offer = await this.pc.createOffer();
-      await this.pc.setLocalDescription(offer);
-      this.sendStream.push({
-        topic: "sendCreatedOffer",
-        sdp: this.pc.localDescription
-      });
-    } catch (err) {
-      console.error(err);
-    }
-  }
-  async start() {
-    console.log("wait ready");
-    const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    pull(
-      this.handshakePushable,
-      pull.take(1),
-      pull.drain(o => this.startBroadCast(mediaStream))
-    );
-    return mediaStream;
+  async getChannel(peerId) {
+    this.sendToPrism.push({
+      topic: "requestCreateOffer",
+      peerId
+    });
+    return;
   }  
 }
 
