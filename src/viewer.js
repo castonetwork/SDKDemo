@@ -10,7 +10,7 @@ const initApp = async () => {
   const channelsElement = document.getElementById('channels');
   const getChannel = async peerId => {
     console.log("getChannel", peerId);
-    media.srcObject = await Casto.getChannel(peerId);
+    media.srcObject = await casto.getChannel(peerId);
   };
   const updateChannel = ({peerId, info})=> {
     let peerElement = document.getElementById(peerId);
