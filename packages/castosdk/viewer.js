@@ -5,6 +5,43 @@ import Pushable from "pull-pushable";
 import createNode from "./createNode";
 import stringify from "pull-stringify";
 
+const codecToFirst = (sdp, codec) => {
+  const regCodecs = /a=rtpmap:(\d+) (.*)\//;
+  const regVideos = /(m=video.*[A-Z\/]+ )([0-9 ]+)/;
+  const h264ids = sdp.match(/a=rtpmap:(\d+) (.*)\//g)
+    .map(o => o.match(regCodecs).splice(1, 2))
+    .filter(o => o[1] === codec)
+    .map(o => o[0]);
+  return sdp.replace(regVideos,
+    '$1' + sdp.match(regVideos)[2].split(' ')
+      .reduce((p, n) => h264ids.some(h => h === n) ? [n].concat(p) : p.concat(n), [])
+      .join(" ")
+  );
+};
+
+function bindPeerConnectionEvents(sendToPrism) {
+  Object.assign(this.pc, {
+    onicecandidate: event => {
+      console.log("onicecandidate", event);
+      if (event.candidate) {
+        sendToPrism.push({
+          topic: "sendTrickleCandidate",
+          candidate: event.candidate
+        });
+      }
+    },
+    oniceconnectionstatechange: e => {
+      if (this.pc.iceConnectionState === "disconnected") {
+        this.pc.close();
+      }
+    },
+    ontrack: event => {
+      console.log("ontrack");
+      this.mediaStream.addTrack(event.track);
+    }
+  });
+};
+
 class Viewer {
   constructor(options) {
     const defaults = {
@@ -20,15 +57,14 @@ class Viewer {
       serviceId: 'TESTO'
     };
     this.prisms = {};
+    this.mediaStream = new MediaStream();
     /* events */
     this.onNodeInitiated = undefined;
     this.onReadyToCast = undefined;
     this.onClosed = undefined;
-
-    /* pushable */
-    this.sendToPrism = undefined;
-
     this.onSendChannelsList = undefined;
+    this.onWavesUpdated = undefined;
+
     this.init({ ...defaults, ...options }); 
   }
   async init(options) {
@@ -46,7 +82,8 @@ class Viewer {
       "onClosed",
       "onSendChannelsList",
       "onSendChannelRemoved",
-      "onSendChannelAdded"
+      "onSendChannelAdded",
+      "onWavesUpdated"
     ]) {
       this.event.addListener(event, e => this[event] && this[event](e));
     }
@@ -66,12 +103,9 @@ class Viewer {
             return;
           }
           const sendToPrism = Pushable();
-          this.sendToPrism = sendToPrism;
-          const mediaStream = new MediaStream();
           this.prisms[prismPeerId] = {
             isDialed: true,
             pushable: sendToPrism,
-            mediaStream
           };
           pull(
             sendToPrism,
@@ -80,43 +114,47 @@ class Viewer {
             pull.map(o => window.JSON.parse(o.toString())),
             pull.drain(event => {
               const events = {
-                "sendChannelsList": ({channels})=> {
-                  this.prisms[prismPeerId] = channels;
-                  this.event.emit("onSendChannelsList", channels);
-                },
-                "updateChannelInfo": ({type, peerId, info}) => {
-                  this.event.emit(type === "added" && "onSendChannelAdded", {peerId, info});
-                },
-                "sendCreateOffer": async ({sdp, peerId} )=> {
-                  this.prisms[prismPeerId].pc = new RTCPeerConnection(this.config.peerConnection);
-                  Object.assign(this.prisms[prismPeerId].pc, {
-                    onicecandidate: event => {
-                      if (event.candidate) {
-                        sendToPrism.push({
-                          topic: "sendTrickleCandidate",
-                          candidate: event.candidate      
-                        });
+                "sendCreatedOffer": async ({sdp, peerId})=> {
+                  Object.assign(this.prisms[prismPeerId], {
+                    channels: {
+                      [peerId]: {
+                        pc: new RTCPeerConnection(this.config.peerConnection)
                       }
-                    },
-                    oniceconnectionstatechange: e => {
-                      if (this.prisms[prismPeerId].pc.iceConnectionState === "disconnected") {
-                        this.prisms[prismPeerId].pc.close();
-                      }
-                    },
-                    ontrack: async event => {
-                      this.event.emit("onTrack", event.track);
                     }
                   });
-                  this.prisms[prismPeerId].pc.setRemoteDescription(sdp)
+                  this.pc = this.prisms[prismPeerId].channels[peerId].pc;
+                  bindPeerConnectionEvents.call(this, sendToPrism);
+                  await this.pc.setRemoteDescription(sdp);
+                  let answer = await this.pc.createAnswer({
+                    offerToReceiveAudio:true,
+                    offerToReceiveVideo:true,
+                  });
+                  await this.pc.setLocalDescription(answer);
+                  sendToPrism.push({
+                    topic: "sendCreatedAnswer",
+                    sdp: this.pc.localDescription,
+                    peerId
+                  });
+                  /* emit event  */
+                },
+                "updateChannelInfo": ({type, peerId, info}) => {
+                  this.event.emit(type === "added" && "onSendChannelAdded", {peerId, prismPeerId, info});
                 },
                 "sendTrickleCandidate": ({ice})=> {
-                  this.prisms[prismPeerId].pc.addIceCandidate(ice);
+                  this.pc.addIceCandidate(ice);
+                },
+                "updateWaves": ({waves})=> {
+                  this.event.emit("onWavesUpdated", waves);
+                },
+                "sendChannelsList": ({channels})=> {
+                  this.prisms[prismPeerId] = { ...this.prisms[prismPeerId], ...channels};
+                  this.event.emit("onSendChannelsList", {channels, prismPeerId});
                 }
               };
               console.log("[event]", event );
               events[event.topic] && events[event.topic](event);
             })
-          )
+          );
           sendToPrism.push({
             topic: "registerWaveInfo",
             peerId: prismPeerId
@@ -129,8 +167,11 @@ class Viewer {
     this._node.on('peer:disconnect', peerInfo => {
       const peerId = peerInfo.id.toB58String();
       if (this.prisms[peerId]) {
-        for (const flowId in this.prisms[peerId]) {
-          this.event.emit("onSendChannelRemoved", flowId);
+        if (this.prisms[peerId].channels) {
+          for (const channel in this.prisms[peerId].channels) {
+            this.event.emit("onSendChannelRemoved", channel);
+            delete this.prisms[peerId].channels[channel];
+          }
         }
         delete this.prisms[peerId];
       }
@@ -143,13 +184,16 @@ class Viewer {
       }
     })
   }
-  async getChannel(peerId) {
-    this.sendToPrism.push({
+  async getChannel(peerId, prismPeerId) {
+    const sendToPrism = this.prisms[prismPeerId].pushable;
+    console.log("get channel from", peerId, prismPeerId);
+    this.mediaStream.getTracks().forEach(o=>this.mediaStream.removeTrack(o));
+    sendToPrism.push({
       topic: "requestCreateOffer",
       peerId
     });
-    return;
-  }  
+    return this.mediaStream;
+  }
 }
 
-module.exports = Viewer
+module.exports = Viewer;
