@@ -8,17 +8,21 @@ const initApp = async () => {
   });
 
   const channelsElement = document.getElementById('channels');
-  const getChannel = async peerId => {
+  const getChannel = async (peerId, prismPeerId) => {
     console.log("getChannel", peerId);
-    media.srcObject = await casto.getChannel(peerId);
+    media.srcObject = await casto.getChannel(peerId, prismPeerId);
+    console.log("mediaStream connected");
   };
-  const updateChannel = ({peerId, info})=> {
+  const updateChannel = ({peerId, prismPeerId, info})=> {
     let peerElement = document.getElementById(peerId);
     if (!peerElement) {
       peerElement = document.createElement('li');
       peerElement.setAttribute('id', peerId);
+      const joinButton = document.createElement('button');
+      joinButton.textContent = "join";
+      channelsElement.appendChild(joinButton);
       channelsElement.appendChild(peerElement);
-      channelsElement.addEventListener('click', ()=>getChannel(peerId), false);
+      joinButton.addEventListener('click', ()=>getChannel(peerId, prismPeerId), false);
     }
     peerElement.textContent = `${info.title}: ${peerId}`;
   };
@@ -29,9 +33,9 @@ const initApp = async () => {
     onNodeInitated: e => console.log("[event] node init"),
     onReadyToCast: peerId=> console.log("[event] ready to cast", peerId),
     onClosed: ()=> document.getElementById("media").srcObject = null,
-    onSendChannelsList: channels => {
+    onSendChannelsList: ({channels, prismPeerId}) => {
       for (const channel in channels) {
-        updateChannel({ peerId: channel, info: channels[channel]});
+        updateChannel({ peerId: channel, prismPeerId, info: channels[channel]});
       }
     },
     onSendChannelAdded: updateChannel,
