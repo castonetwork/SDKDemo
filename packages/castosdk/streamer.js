@@ -4,6 +4,20 @@ import pull from "pull-stream";
 import Pushable from "pull-pushable";
 import createNode from "./createNode";
 
+const codecToFirst = (sdp, codec) => {
+  const regCodecs = /a=rtpmap:(\d+) (.*)\//;
+  const regVideos = /(m=video.*[A-Z\/]+ )([0-9 ]+)/;
+  const h264ids = sdp.match(/a=rtpmap:(\d+) (.*)\//g)
+    .map(o => o.match(regCodecs).splice(1, 2))
+    .filter(o => o[1] === codec)
+    .map(o => o[0]);
+  return sdp.replace(regVideos,
+    '$1' + sdp.match(regVideos)[2].split(' ')
+      .reduce((p, n) => h264ids.some(h => h === n) ? [n].concat(p) : p.concat(n), [])
+      .join(" ")
+  );
+};
+
 class Streamer {
   constructor(options) {
     const defaults = {
@@ -159,6 +173,7 @@ class Streamer {
     );
     try {
       let offer = await this.pc.createOffer();
+      offer.sdp = codecToFirst(offer.sdp, 'h264');
       await this.pc.setLocalDescription(offer);
       this.sendStream.push({
         topic: "sendCreatedOffer",
