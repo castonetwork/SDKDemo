@@ -5,20 +5,6 @@ import Pushable from "pull-pushable";
 import createNode from "./createNode";
 import stringify from "pull-stringify";
 
-const codecToFirst = (sdp, codec) => {
-  const regCodecs = /a=rtpmap:(\d+) (.*)\//;
-  const regVideos = /(m=video.*[A-Z\/]+ )([0-9 ]+)/;
-  const h264ids = sdp.match(/a=rtpmap:(\d+) (.*)\//g)
-    .map(o => o.match(regCodecs).splice(1, 2))
-    .filter(o => o[1] === codec)
-    .map(o => o[0]);
-  return sdp.replace(regVideos,
-    '$1' + sdp.match(regVideos)[2].split(' ')
-      .reduce((p, n) => h264ids.some(h => h === n) ? [n].concat(p) : p.concat(n), [])
-      .join(" ")
-  );
-};
-
 function bindPeerConnectionEvents(sendToPrism) {
   Object.assign(this.pc, {
     onicecandidate: event => {
